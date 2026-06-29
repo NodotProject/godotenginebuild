@@ -161,7 +161,7 @@ User selections never become raw shell or Python strings:
 | GET  | `/api/metrics` | Process counters (requests, responses, builds, queue) |
 
 The web app also exposes `/privacy` and `/terms` pages, a `robots.txt`, and a
-`/.well-known/security.txt` (update the contact before launch).
+`/.well-known/security.txt`.
 
 ## License
 

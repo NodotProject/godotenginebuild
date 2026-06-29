@@ -1,5 +1,5 @@
-# RFC 9116 security contact. Set Canonical to your production URL before launch.
+# RFC 9116 security contact.
 Contact: mailto:spool-satin-barge@duck.com
 Expires: 2027-01-01T00:00:00.000Z
 Preferred-Languages: en
-Canonical: https://example.com/.well-known/security.txt
+Canonical: https://godotengine.build/.well-known/security.txt
