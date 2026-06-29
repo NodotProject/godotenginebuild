@@ -1,0 +1,25 @@
+services:
+  godot-build:
+    build: .
+    image: godot-build-service
+    ports:
+      - "8787:8787"
+    environment:
+      PORT: "8787"
+      DATA_ROOT: /data
+      # Served same-origin by the API; set to your public URL behind a proxy.
+      CORS_ORIGINS: http://localhost:8787
+      # Number of reverse-proxy hops in front (set to 1 behind nginx/Caddy/CF).
+      TRUST_PROXY: "0"
+      BUILD_CACHE_LIMIT_GIB: "50"
+      SCONS_CACHE_LIMIT_GIB: "20"
+      MIN_FREE_DISK_GIB: "10"
+      MAX_CONCURRENT_BUILDS: "1"
+    volumes:
+      - godot-data:/data
+    # tini is the entrypoint; init is belt-and-suspenders for zombie reaping.
+    init: true
+    restart: unless-stopped
+
+volumes:
+  godot-data:

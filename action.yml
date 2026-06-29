@@ -1,0 +1,141 @@
+name: "Custom Godot Build"
+description: "Fetch a Godot export template compiled to an exact feature configuration from a Custom Godot Builds service."
+branding:
+  icon: "download"
+  color: "blue"
+
+inputs:
+  service-url:
+    description: "Base URL of the Custom Godot Builds service (e.g. https://builds.example.com)."
+    required: true
+  version:
+    description: "Godot version to build (must be offered by the service, e.g. 4.3-stable)."
+    required: true
+  platform:
+    description: "Target platform: linuxbsd, windows, or macos."
+    required: true
+  options:
+    description: "JSON object of feature toggles, exactly as emitted by the service's 'Copy GH Action' button."
+    required: false
+    default: "{}"
+  output-dir:
+    description: "Directory the artifact is written into."
+    required: false
+    default: "godot-template"
+  poll-interval:
+    description: "Seconds between status polls while the build runs."
+    required: false
+    default: "15"
+  timeout:
+    description: "Max seconds to wait for the build to finish before failing."
+    required: false
+    default: "2700"
+
+outputs:
+  artifact-path:
+    description: "Path to the downloaded export template."
+    value: ${{ steps.build.outputs.artifact-path }}
+  sha256:
+    description: "SHA-256 of the artifact, as reported and verified."
+    value: ${{ steps.build.outputs.sha256 }}
+  cache-key:
+    description: "Service cache key identifying this exact build."
+    value: ${{ steps.build.outputs.cache-key }}
+
+runs:
+  using: composite
+  steps:
+    - name: Fetch custom Godot template
+      id: build
+      shell: bash
+      env:
+        SERVICE_URL: ${{ inputs.service-url }}
+        VERSION: ${{ inputs.version }}
+        PLATFORM: ${{ inputs.platform }}
+        OPTIONS: ${{ inputs.options }}
+        OUTPUT_DIR: ${{ inputs.output-dir }}
+        POLL_INTERVAL: ${{ inputs.poll-interval }}
+        TIMEOUT: ${{ inputs.timeout }}
+      run: |
+        set -euo pipefail
+        api="${SERVICE_URL%/}"
+
+        if ! printf '%s' "$OPTIONS" | jq -e 'type == "object"' >/dev/null 2>&1; then
+          echo "::error::'options' must be a JSON object. Got: $OPTIONS"
+          exit 1
+        fi
+
+        body="$(jq -nc --arg v "$VERSION" --arg p "$PLATFORM" --argjson o "$OPTIONS" \
+          '{version: $v, platforms: [$p], options: $o}')"
+
+        echo "Requesting $VERSION / $PLATFORM from $api"
+        if ! resp="$(curl -fsS -X POST "$api/api/builds" \
+            -H 'content-type: application/json' -d "$body")"; then
+          echo "::error::Could not reach the build service at $api/api/builds"
+          exit 1
+        fi
+
+        job="$(printf '%s' "$resp" | jq -c '.jobs[0] // empty')"
+        if [ -z "$job" ]; then
+          echo "::error::Service returned no job. Response: $resp"
+          exit 1
+        fi
+
+        status="$(printf '%s' "$job" | jq -r '.status')"
+        job_id="$(printf '%s' "$job" | jq -r '.jobId')"
+
+        # Fail fast on any rejection. The service builds one config at a time, so a
+        # request arriving while it is busy with a different config comes back
+        # 'failed' with an explanatory message rather than being queued.
+        if [ "$status" = "failed" ]; then
+          err="$(printf '%s' "$job" | jq -r '.error // "unknown error"')"
+          echo "::error::Build was rejected: $err"
+          exit 1
+        fi
+
+        # status is success (cache hit / already-finished) or queued|building (our slot).
+        deadline=$(( $(date +%s) + TIMEOUT ))
+        while [ "$status" = "queued" ] || [ "$status" = "building" ]; do
+          if [ "$(date +%s)" -ge "$deadline" ]; then
+            echo "::error::Timed out after ${TIMEOUT}s waiting for build $job_id"
+            exit 1
+          fi
+          sleep "$POLL_INTERVAL"
+          if ! job="$(curl -fsS "$api/api/builds/$job_id")"; then
+            echo "::error::Lost connection to the build service while polling $job_id"
+            exit 1
+          fi
+          status="$(printf '%s' "$job" | jq -r '.status')"
+          echo "  $job_id: $status"
+        done
+
+        if [ "$status" != "success" ]; then
+          err="$(printf '%s' "$job" | jq -r '.error // "unknown error"')"
+          echo "::error::Build did not succeed (status=$status): $err"
+          exit 1
+        fi
+
+        dl="$(printf '%s' "$job" | jq -r '.downloadUrl')"
+        sha="$(printf '%s' "$job" | jq -r '.sha256 // empty')"
+        cache_key="$(printf '%s' "$job" | jq -r '.cacheKey // empty')"
+
+        mkdir -p "$OUTPUT_DIR"
+        (
+          cd "$OUTPUT_DIR"
+          curl -fSL -OJ "$api$dl"
+        )
+        file="$(ls -t "$OUTPUT_DIR" | head -1)"
+        dest="$OUTPUT_DIR/$file"
+
+        if [ -n "$sha" ]; then
+          echo "$sha  $dest" | sha256sum -c -
+        else
+          echo "::warning::Service did not report a sha256; skipping checksum verification"
+        fi
+
+        {
+          echo "artifact-path=$dest"
+          echo "sha256=$sha"
+          echo "cache-key=$cache_key"
+        } >> "$GITHUB_OUTPUT"
+        echo "Saved export template to $dest"

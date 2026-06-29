@@ -1,0 +1,5 @@
+# RFC 9116 security contact. Update the contact + canonical URL before launch.
+Contact: mailto:security@example.com
+Expires: 2027-01-01T00:00:00.000Z
+Preferred-Languages: en
+Canonical: https://example.com/.well-known/security.txt

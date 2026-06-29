@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="Custom Godot Builds">
+  <rect width="64" height="64" rx="14" fill="#020617" />
+  <path d="M20 24c0-3 2.5-5 6-5s6 2 6 5-2.5 5-6 5-6-2-6-5Zm18 0c0-3 2.5-5 6-5s6 2 6 5-2.5 5-6 5-6-2-6-5Z" fill="#38bdf8" />
+  <circle cx="26" cy="24" r="2.2" fill="#020617" />
+  <circle cx="44" cy="24" r="2.2" fill="#020617" />
+  <path d="M16 34h32a4 4 0 0 1 4 4v3a8 8 0 0 1-8 8H20a8 8 0 0 1-8-8v-3a4 4 0 0 1 4-4Z" fill="#0ea5e9" />
+</svg>
