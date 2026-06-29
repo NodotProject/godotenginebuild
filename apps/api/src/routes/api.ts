@@ -17,7 +17,7 @@ import {
   isSupportedVersion,
 } from "../catalog/versionService.js";
 import { openSse, sseConnectionsAtCapacity } from "../util/sse.js";
-import { rateLimit } from "../util/rateLimit.js";
+import { rateLimit, ipQuota } from "../util/rateLimit.js";
 import { hasFreeSpace } from "../util/diskSpace.js";
 import { countBuildSubmitted, countCacheHit, countDownload } from "../metrics.js";
 import { paths } from "../paths.js";
@@ -41,6 +41,12 @@ const buildLimiter = rateLimit({
   windowMs: config.rateLimit.windowMs,
   max: config.rateLimit.build,
   message: "You've started too many builds recently. Please wait a minute and retry.",
+});
+// Counts only builds an IP actually enqueues, so cache hits and "server busy"
+// rejections never burn the allowance.
+const buildQuota = ipQuota({
+  windowMs: config.rateLimit.buildQuotaWindowMs,
+  max: config.rateLimit.buildQuota,
 });
 const downloadLimiter = rateLimit({
   windowMs: config.rateLimit.windowMs,
@@ -104,6 +110,13 @@ api.post("/builds/check", checkLimiter, async (req, res) => {
 });
 
 api.post("/builds", buildLimiter, async (req, res) => {
+  if (buildQuota.exceeded(req)) {
+    res.setHeader("Retry-After", String(buildQuota.retryAfterSeconds(req)));
+    return res.status(429).json({
+      error: `You've reached the build limit of ${config.rateLimit.buildQuota} builds. Please try again later.`,
+    });
+  }
+
   const body = await parseAndValidate(req, res);
   if (!body) return;
 
@@ -183,6 +196,7 @@ api.post("/builds", buildLimiter, async (req, res) => {
 
     const { jobId, status } = submitJob(plan.cacheKey, plan.manifest);
     countBuildSubmitted();
+    buildQuota.consume(req);
     jobs.push({ ...base, jobId, status, cached: false });
   }
 

@@ -53,3 +53,59 @@ export function rateLimit(opts: {
     next();
   };
 }
+
+function clientKey(req: Request): string {
+  return req.ip ?? req.socket.remoteAddress ?? "unknown";
+}
+
+export interface IpQuota {
+  /** True when this client has already used its full allowance for the window. */
+  exceeded(req: Request): boolean;
+  /** Record `n` consumed units against this client's current window. */
+  consume(req: Request, n?: number): void;
+  /** Seconds until the client's window resets (for a Retry-After header). */
+  retryAfterSeconds(req: Request): number;
+}
+
+/**
+ * A fixed-window per-IP quota whose counting is decoupled from request handling:
+ * callers `consume` only when a unit is actually used (e.g. a real build is
+ * enqueued), so cache hits and rejected requests don't burn the allowance.
+ * Same in-process, lazily-swept design as {@link rateLimit}.
+ */
+export function ipQuota(opts: { windowMs: number; max: number }): IpQuota {
+  const buckets = new Map<string, Bucket>();
+  let lastSweep = Date.now();
+
+  function sweep(now: number): void {
+    if (now - lastSweep < opts.windowMs) return;
+    lastSweep = now;
+    for (const [key, b] of buckets) {
+      if (b.resetAt <= now) buckets.delete(key);
+    }
+  }
+
+  function bucketFor(key: string, now: number): Bucket {
+    let b = buckets.get(key);
+    if (!b || b.resetAt <= now) {
+      b = { count: 0, resetAt: now + opts.windowMs };
+      buckets.set(key, b);
+    }
+    return b;
+  }
+
+  return {
+    exceeded(req) {
+      const now = Date.now();
+      sweep(now);
+      return bucketFor(clientKey(req), now).count >= opts.max;
+    },
+    consume(req, n = 1) {
+      bucketFor(clientKey(req), Date.now()).count += n;
+    },
+    retryAfterSeconds(req) {
+      const b = buckets.get(clientKey(req));
+      return b ? Math.max(0, Math.ceil((b.resetAt - Date.now()) / 1000)) : Math.ceil(opts.windowMs / 1000);
+    },
+  };
+}

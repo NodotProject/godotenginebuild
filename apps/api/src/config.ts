@@ -42,10 +42,14 @@ export const config = {
     windowMs: int("RATE_LIMIT_WINDOW_MS", 60_000),
     /** Cheap read/check endpoints. */
     check: int("RATE_LIMIT_CHECK", 120),
-    /** Expensive enqueue endpoint. */
+    /** Per-window request burst guard on the enqueue endpoint. */
     build: int("RATE_LIMIT_BUILD", 10),
     /** Artifact downloads. */
     download: int("RATE_LIMIT_DOWNLOAD", 60),
+    /** Window for the build quota below (default 24h). */
+    buildQuotaWindowMs: int("RATE_LIMIT_BUILD_WINDOW_MS", 24 * 60 * 60 * 1000),
+    /** Max real builds an IP may enqueue per quota window (cache hits don't count). */
+    buildQuota: int("RATE_LIMIT_BUILD_PER_DAY", 10),
   },
 
   /** Hard cap on total size of published build artifacts; oldest are evicted. */
