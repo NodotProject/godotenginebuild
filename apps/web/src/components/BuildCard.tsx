@@ -1,10 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
   stableStringify,
+  type BuildCheckResult,
   type JobStatus,
   type OptionSelection,
-  type PlatformCheckResult,
-  type PlatformDef,
 } from "@godotbuild/shared";
 import { formatBytes, formatDuration, ghActionConfig } from "../util.js";
 
@@ -18,12 +17,13 @@ export interface JobState {
 }
 
 interface Props {
-  def: PlatformDef;
-  check?: PlatformCheckResult;
+  check?: BuildCheckResult;
   job?: JobState;
   logLines: string[];
   version: string;
   selection: OptionSelection;
+  /** Labels of the platforms this service bundles, e.g. ["Linux", "Windows"]. */
+  platformLabels: string[];
   onGenerate: () => void;
 }
 
@@ -48,7 +48,7 @@ function DownloadButton({ url, size }: { url: string; size?: number }) {
       href={url}
       className="inline-flex items-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-medium px-4 py-2 rounded-lg"
     >
-      ↓ Download{size ? ` (${formatBytes(size)})` : ""}
+      ↓ Download bundle{size ? ` (${formatBytes(size)})` : ""}
     </a>
   );
 }
@@ -76,7 +76,15 @@ function CopyActionButton({ config }: { config: string }) {
   );
 }
 
-export function PlatformCard({ def, check, job, logLines, version, selection, onGenerate }: Props) {
+export function BuildCard({
+  check,
+  job,
+  logLines,
+  version,
+  selection,
+  platformLabels,
+  onGenerate,
+}: Props) {
   const building = job?.status === "queued" || job?.status === "building";
   const cachedUrl = job?.downloadUrl ?? (check?.cached ? check.downloadUrl : undefined);
   const failed = job?.status === "failed";
@@ -84,17 +92,14 @@ export function PlatformCard({ def, check, job, logLines, version, selection, on
   return (
     <div className="border border-slate-800 rounded-xl p-4 bg-slate-900/40">
       <div className="flex items-center justify-between">
-        <h3 className="font-semibold text-slate-100">{def.label}</h3>
-        {check?.cached && !building && (
-          <span className="text-xs text-emerald-400">cached</span>
-        )}
+        <div>
+          <h3 className="font-semibold text-slate-100">Export template bundle</h3>
+          <p className="text-xs text-slate-500">{platformLabels.join(" · ")}</p>
+        </div>
+        {check?.cached && !building && <span className="text-xs text-emerald-400">cached</span>}
       </div>
 
-      {!def.available ? (
-        <p className="mt-3 text-sm text-amber-400/90">
-          Unavailable on this host. {def.unavailableReason}
-        </p>
-      ) : building ? (
+      {building ? (
         <div className="mt-3">
           <p className="text-sm text-sky-300 flex items-center gap-2">
             <span className="inline-block w-2 h-2 rounded-full bg-sky-400 animate-pulse" />
@@ -107,11 +112,7 @@ export function PlatformCard({ def, check, job, logLines, version, selection, on
           <div className="flex flex-wrap items-center gap-2">
             <DownloadButton url={cachedUrl} size={job?.sizeBytes ?? check?.sizeBytes} />
             <CopyActionButton
-              config={ghActionConfig({
-                version,
-                platform: def.platform,
-                options: stableStringify(selection),
-              })}
+              config={ghActionConfig({ version, options: stableStringify(selection) })}
             />
           </div>
           {(job?.sha256 ?? check?.sha256) && (

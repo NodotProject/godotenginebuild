@@ -1,10 +1,9 @@
-import type { JobStatus, PlatformDef } from "@godotbuild/shared";
+import type { JobStatus } from "@godotbuild/shared";
 import type { BuildHistoryEntry } from "../history.js";
 import { formatBytes } from "../util.js";
 
 interface Props {
   entries: BuildHistoryEntry[];
-  platformDefs: PlatformDef[];
   onLoad: (entry: BuildHistoryEntry) => void;
   onRemove: (jobId: string) => void;
   onClear: () => void;
@@ -36,7 +35,7 @@ function relativeTime(ts: number): string {
   return `${Math.round(h / 24)}d ago`;
 }
 
-export function BuildHistory({ entries, platformDefs, onLoad, onRemove, onClear }: Props) {
+export function BuildHistory({ entries, onLoad, onRemove, onClear }: Props) {
   if (entries.length === 0) return null;
 
   return (
@@ -54,7 +53,6 @@ export function BuildHistory({ entries, platformDefs, onLoad, onRemove, onClear 
 
       <ul className="space-y-2">
         {entries.map((e) => {
-          const label = platformDefs.find((d) => d.platform === e.platform)?.label ?? e.platform;
           const building = e.status === "queued" || e.status === "building";
           const optionCount = Object.keys(e.selection).length;
           return (
@@ -75,8 +73,8 @@ export function BuildHistory({ entries, platformDefs, onLoad, onRemove, onClear 
 
               <div className="min-w-0 flex-1">
                 <p className="text-sm text-slate-200 truncate">
-                  {label}
-                  <span className="text-slate-500"> · Godot {e.version}</span>
+                  Godot {e.version}
+                  <span className="text-slate-500"> · all platforms</span>
                 </p>
                 <p className="text-xs text-slate-500">
                   {optionCount === 0 ? "default options" : `${optionCount} option${optionCount === 1 ? "" : "s"} changed`}

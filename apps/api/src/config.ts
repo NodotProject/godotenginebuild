@@ -1,11 +1,29 @@
 import os from "node:os";
 import path from "node:path";
+import { ALL_PLATFORMS, type Platform } from "@godotbuild/shared";
 
 function int(name: string, fallback: number): number {
   const v = process.env[name];
   if (!v) return fallback;
   const n = Number.parseInt(v, 10);
   return Number.isFinite(n) ? n : fallback;
+}
+
+/**
+ * Platforms this host offers in every bundle. Operators without a macOS
+ * toolchain (osxcross + Apple SDK + rcodesign) drop "macos" so builds don't hit
+ * the all-or-nothing availability gate. Unknown/dup values are ignored; an empty
+ * or unset list falls back to every supported platform.
+ */
+function buildPlatforms(): Platform[] {
+  const raw = process.env.BUILD_PLATFORMS;
+  if (!raw) return [...ALL_PLATFORMS];
+  const picked = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s): s is Platform => (ALL_PLATFORMS as string[]).includes(s));
+  const unique = [...new Set(picked)];
+  return unique.length ? unique : [...ALL_PLATFORMS];
 }
 
 const cores = Math.max(1, os.cpus().length);
@@ -33,6 +51,9 @@ export const config = {
 
   /** Built web bundle to serve (SPA). Empty disables static serving. */
   webDist: process.env.WEB_DIST ?? path.resolve(process.cwd(), "apps/web/dist"),
+
+  /** Platforms every bundle covers (see buildPlatforms above). */
+  buildPlatforms: buildPlatforms(),
 
   /** Refuse to start a build when free disk space drops below this (GiB). */
   minFreeDiskGiB: int("MIN_FREE_DISK_GIB", 10),

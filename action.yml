@@ -1,5 +1,5 @@
 name: "Custom Godot Build"
-description: "Fetch a Godot export template compiled to an exact feature configuration from a Custom Godot Builds service."
+description: "Fetch Godot export templates (Linux, Windows & macOS) compiled to an exact feature configuration from a Custom Godot Builds service."
 branding:
   icon: "download"
   color: "blue"
@@ -11,15 +11,12 @@ inputs:
   version:
     description: "Godot version to build (must be offered by the service, e.g. 4.3-stable)."
     required: true
-  platform:
-    description: "Target platform: linuxbsd, windows, or macos."
-    required: true
   options:
     description: "JSON object of feature toggles, exactly as emitted by the service's 'Copy GH Action' button."
     required: false
     default: "{}"
   output-dir:
-    description: "Directory the artifact is written into."
+    description: "Directory the artifact bundle is written into."
     required: false
     default: "godot-template"
   poll-interval:
@@ -33,7 +30,7 @@ inputs:
 
 outputs:
   artifact-path:
-    description: "Path to the downloaded export template."
+    description: "Path to the downloaded export-template bundle (zip of all platforms)."
     value: ${{ steps.build.outputs.artifact-path }}
   sha256:
     description: "SHA-256 of the artifact, as reported and verified."
@@ -51,7 +48,6 @@ runs:
       env:
         SERVICE_URL: ${{ inputs.service-url }}
         VERSION: ${{ inputs.version }}
-        PLATFORM: ${{ inputs.platform }}
         OPTIONS: ${{ inputs.options }}
         OUTPUT_DIR: ${{ inputs.output-dir }}
         POLL_INTERVAL: ${{ inputs.poll-interval }}
@@ -65,17 +61,17 @@ runs:
           exit 1
         fi
 
-        body="$(jq -nc --arg v "$VERSION" --arg p "$PLATFORM" --argjson o "$OPTIONS" \
-          '{version: $v, platforms: [$p], options: $o}')"
+        body="$(jq -nc --arg v "$VERSION" --argjson o "$OPTIONS" \
+          '{version: $v, options: $o}')"
 
-        echo "Requesting $VERSION / $PLATFORM from $api"
+        echo "Requesting $VERSION (all-platform bundle) from $api"
         if ! resp="$(curl -fsS -X POST "$api/api/builds" \
             -H 'content-type: application/json' -d "$body")"; then
           echo "::error::Could not reach the build service at $api/api/builds"
           exit 1
         fi
 
-        job="$(printf '%s' "$resp" | jq -c '.jobs[0] // empty')"
+        job="$(printf '%s' "$resp" | jq -c '.job // empty')"
         if [ -z "$job" ]; then
           echo "::error::Service returned no job. Response: $resp"
           exit 1

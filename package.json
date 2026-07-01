@@ -5,6 +5,7 @@
   "description": "Web app that compiles and caches custom Godot engine builds on demand",
   "license": "MIT",
   "type": "module",
+  "packageManager": "pnpm@9.15.9",
   "engines": {
     "node": ">=20"
   },

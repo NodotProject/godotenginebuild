@@ -4,7 +4,6 @@ import {
   BASE_OPTIONS,
   CATALOG_VERSION,
   DEFAULT_TARGET,
-  PLATFORM_ARCH,
   buildCacheKeyInput,
   canonicalizeOptions,
   computeCacheKey,
@@ -35,15 +34,14 @@ function makeCatalog(): OptionCatalog {
   };
 }
 
-function keyInput(platform: Platform, options: OptionSelection) {
+function keyInput(options: OptionSelection, platforms?: Platform[]) {
   const catalog = makeCatalog();
   return buildCacheKeyInput({
     version: "4.5-stable",
-    platform,
-    arch: PLATFORM_ARCH[platform],
     target: DEFAULT_TARGET,
     options,
     catalog,
+    platforms,
   });
 }
 
@@ -103,21 +101,23 @@ test("canonicalizeOptions skips options not applicable to the platform", () => {
 // --- computeCacheKey -------------------------------------------------------
 
 test("cache key is stable: omitting a default == setting it explicitly", async () => {
-  const a = await computeCacheKey(keyInput("linuxbsd", {}));
-  const b = await computeCacheKey(keyInput("linuxbsd", { disable_3d: false }));
+  const a = await computeCacheKey(keyInput({}));
+  const b = await computeCacheKey(keyInput({ disable_3d: false }));
   assert.equal(a, b);
 });
 
-test("cache key differs by option value and by platform", async () => {
-  const base = await computeCacheKey(keyInput("linuxbsd", {}));
-  const changed = await computeCacheKey(keyInput("linuxbsd", { disable_3d: true }));
-  const otherPlatform = await computeCacheKey(keyInput("windows", {}));
+test("cache key differs by option value and by platform set", async () => {
+  const base = await computeCacheKey(keyInput({}));
+  const changed = await computeCacheKey(keyInput({ disable_3d: true }));
+  // A bundle covers every configured platform, so the key varies by the SET of
+  // platforms, not a single one: a Linux+Windows bundle differs from all-three.
+  const fewerPlatforms = await computeCacheKey(keyInput({}, ["linuxbsd", "windows"]));
   assert.notEqual(base, changed);
-  assert.notEqual(base, otherPlatform);
+  assert.notEqual(base, fewerPlatforms);
 });
 
 test("cache key is a 64-char hex sha256", async () => {
-  const key = await computeCacheKey(keyInput("linuxbsd", { disable_3d: true }));
+  const key = await computeCacheKey(keyInput({ disable_3d: true }));
   assert.match(key, /^[a-f0-9]{64}$/);
 });
 

@@ -2,7 +2,7 @@ import fs from "node:fs";
 import { Router, type Request, type Response, type Router as ExpressRouter } from "express";
 import { z } from "zod";
 import { getCatalog } from "../catalog/catalogService.js";
-import { planPlatform, toCheckResult } from "../build/planner.js";
+import { planBundle, toCheckResult } from "../build/planner.js";
 import { getActiveJob, getJobInfo, hasActiveBuild, submitJob } from "../build/queue.js";
 import { subscribe, getLive } from "../build/logHub.js";
 import {
@@ -24,11 +24,9 @@ import { paths } from "../paths.js";
 import { config } from "../config.js";
 import { log } from "../log.js";
 import {
-  DEFAULT_TARGET,
   validateSelection,
   type BuildRequest,
   type JobInfo,
-  type Platform,
 } from "@godotbuild/shared";
 
 export const api: ExpressRouter = Router();
@@ -53,10 +51,8 @@ const downloadLimiter = rateLimit({
   max: config.rateLimit.download,
 });
 
-const platformEnum = z.enum(["linuxbsd", "windows", "macos"]);
 const buildRequestSchema = z.object({
   version: z.string(),
-  platforms: z.array(platformEnum).min(1),
   options: z.record(z.union([z.boolean(), z.string()])),
 });
 
@@ -101,12 +97,8 @@ async function parseAndValidate(req: Request, res: Response) {
 api.post("/builds/check", checkLimiter, async (req, res) => {
   const body = await parseAndValidate(req, res);
   if (!body) return;
-  const results = await Promise.all(
-    body.platforms.map(async (platform) =>
-      toCheckResult(await planPlatform(body.version, platform, body.options), body.version),
-    ),
-  );
-  res.json({ results });
+  const plan = await planBundle(body.version, body.options);
+  res.json({ result: toCheckResult(plan, body.version) });
 });
 
 api.post("/builds", buildLimiter, async (req, res) => {
@@ -120,87 +112,69 @@ api.post("/builds", buildLimiter, async (req, res) => {
   const body = await parseAndValidate(req, res);
   if (!body) return;
 
-  // Captured once so a single multi-platform request can enqueue all of its own
-  // platforms, while a request arriving mid-build does nothing new.
-  const serverBusy = hasActiveBuild();
+  const plan = await planBundle(body.version, body.options);
+  const base = { cacheKey: plan.cacheKey, cached: false } as const;
+  const respond = (job: JobInfo) => res.json({ job });
+
+  if (plan.cached) {
+    countCacheHit();
+    const meta = readMeta(plan.cacheKey);
+    return respond({
+      ...base,
+      jobId: `cached-${plan.cacheKey.slice(0, 12)}`,
+      status: "success",
+      cached: true,
+      downloadUrl: makeDownloadUrl(plan.cacheKey),
+      sha256: meta?.sha256,
+      sizeBytes: meta?.sizeBytes,
+    });
+  }
+
+  // This exact build is already in flight: attach to it rather than starting a duplicate.
+  const active = getActiveJob(plan.cacheKey);
+  if (active) {
+    return respond({ ...base, jobId: active.jobId, status: active.status });
+  }
+
+  // The bundle is all-or-nothing: every offered platform must be buildable here.
+  const unavailable: string[] = [];
+  for (const platform of config.buildPlatforms) {
+    if (!(await isPlatformAvailable(platform))) unavailable.push(platform);
+  }
+  if (unavailable.length > 0) {
+    return respond({
+      ...base,
+      jobId: "unavailable",
+      status: "failed",
+      error: `Cannot build the bundle — this host is missing the toolchain for: ${unavailable.join(", ")}.`,
+    });
+  }
 
   // A cold build needs tens of GiB for source + worktree + object cache; refuse
   // to start one when the data volume is nearly full (cached downloads still work).
-  const diskOk = await hasFreeSpace(paths.root, config.minFreeDiskGiB);
-
-  const jobs: JobInfo[] = [];
-  for (const platform of body.platforms) {
-    const plan = await planPlatform(body.version, platform, body.options);
-    const base = {
-      cacheKey: plan.cacheKey,
-      platform,
-      arch: plan.arch,
-      target: DEFAULT_TARGET,
-    };
-
-    if (plan.cached) {
-      countCacheHit();
-      const meta = readMeta(plan.cacheKey);
-      jobs.push({
-        ...base,
-        jobId: `cached-${plan.cacheKey.slice(0, 12)}`,
-        status: "success",
-        cached: true,
-        downloadUrl: makeDownloadUrl(plan.cacheKey),
-        sha256: meta?.sha256,
-        sizeBytes: meta?.sizeBytes,
-      });
-      continue;
-    }
-
-    // This exact build is already in flight: attach to it rather than starting a duplicate.
-    const active = getActiveJob(plan.cacheKey);
-    if (active) {
-      jobs.push({ ...base, jobId: active.jobId, status: active.status, cached: false });
-      continue;
-    }
-
-    if (!(await isPlatformAvailable(platform))) {
-      jobs.push({
-        ...base,
-        jobId: `unavailable-${platform}`,
-        status: "failed",
-        cached: false,
-        error: `Platform ${platform} cannot be built on this host (toolchain missing).`,
-      });
-      continue;
-    }
-
-    if (!diskOk) {
-      jobs.push({
-        ...base,
-        jobId: `nospace-${platform}`,
-        status: "failed",
-        cached: false,
-        error: "The build server is low on disk space. Please try again later.",
-      });
-      continue;
-    }
-
-    // A different build is already running: do nothing rather than queue more work.
-    if (serverBusy) {
-      jobs.push({
-        ...base,
-        jobId: `busy-${platform}`,
-        status: "failed",
-        cached: false,
-        error: "Server is busy building another configuration. Please retry once it finishes.",
-      });
-      continue;
-    }
-
-    const { jobId, status } = submitJob(plan.cacheKey, plan.manifest);
-    countBuildSubmitted();
-    buildQuota.consume(req);
-    jobs.push({ ...base, jobId, status, cached: false });
+  if (!(await hasFreeSpace(paths.root, config.minFreeDiskGiB))) {
+    return respond({
+      ...base,
+      jobId: "nospace",
+      status: "failed",
+      error: "The build server is low on disk space. Please try again later.",
+    });
   }
 
-  res.json({ jobs });
+  // A different build is already running: do nothing rather than queue more work.
+  if (hasActiveBuild()) {
+    return respond({
+      ...base,
+      jobId: "busy",
+      status: "failed",
+      error: "Server is busy building another configuration. Please retry once it finishes.",
+    });
+  }
+
+  const { jobId, status } = submitJob(plan.cacheKey, plan.manifest);
+  countBuildSubmitted();
+  buildQuota.consume(req);
+  respond({ ...base, jobId, status });
 });
 
 api.get("/builds/:jobId/events", async (req, res) => {
@@ -263,9 +237,6 @@ api.get("/builds/:jobId", (req, res) => {
   res.json({
     jobId: rec.jobId,
     cacheKey: rec.cacheKey,
-    platform: rec.manifest.platform,
-    arch: rec.manifest.arch,
-    target: rec.manifest.target,
     status: rec.status,
     cached: isCached(rec.cacheKey),
     error: rec.error,

@@ -1,4 +1,4 @@
-import { CACHE_SCHEMA } from "./catalog.js";
+import { ALL_PLATFORMS, CACHE_SCHEMA, PLATFORM_ARCH } from "./catalog.js";
 import { canonicalizeOptions } from "./options.js";
 import type {
   BuildTarget,
@@ -6,6 +6,7 @@ import type {
   OptionCatalog,
   OptionSelection,
   Platform,
+  PlatformBuildSpec,
 } from "./types.js";
 
 /** Deterministic JSON: object keys sorted recursively, no whitespace. */
@@ -25,20 +26,26 @@ export function stableStringify(value: unknown): string {
 
 export function buildCacheKeyInput(params: {
   version: string;
-  platform: Platform;
-  arch: string;
   target: BuildTarget;
   options: OptionSelection;
   catalog: OptionCatalog;
+  /** Platforms the bundle should cover. Defaults to every supported platform. */
+  platforms?: Platform[];
 }): CacheKeyInput {
+  const targetPlatforms = params.platforms ?? ALL_PLATFORMS;
+  const platforms = {} as Record<Platform, PlatformBuildSpec>;
+  for (const platform of targetPlatforms) {
+    platforms[platform] = {
+      arch: PLATFORM_ARCH[platform],
+      options: canonicalizeOptions(params.options, params.catalog, platform),
+    };
+  }
   return {
     schema: CACHE_SCHEMA,
     godotVersion: params.version,
-    platform: params.platform,
-    arch: params.arch,
-    target: params.target,
     catalogVersion: params.catalog.catalogVersion,
-    options: canonicalizeOptions(params.options, params.catalog, params.platform),
+    target: params.target,
+    platforms,
   };
 }
 

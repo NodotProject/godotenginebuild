@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  ALL_PLATFORMS,
   stableStringify,
+  type BuildCheckResult,
   type OptionCatalog,
   type OptionSelection,
   type OptionValue,
-  type Platform,
-  type PlatformCheckResult,
   type VersionInfo,
 } from "@godotbuild/shared";
 import { checkBuilds, createBuilds, getCatalog, getJob, getVersions } from "./api.js";
+import { formatList } from "./util.js";
 import { OptionsDrawer } from "./components/OptionsDrawer.js";
-import { PlatformCard, type JobState } from "./components/PlatformCard.js";
+import { BuildCard, type JobState } from "./components/BuildCard.js";
 import { BuildHistory } from "./components/BuildHistory.js";
 import {
   isTerminal,
@@ -26,11 +25,10 @@ export function App() {
   const [versions, setVersions] = useState<VersionInfo[]>([]);
   const [version, setVersion] = useState<string>("");
   const [catalog, setCatalog] = useState<OptionCatalog | null>(null);
-  const [platforms, setPlatforms] = useState<Platform[]>(["linuxbsd"]);
   const [selection, setSelection] = useState<OptionSelection>({});
-  const [checks, setChecks] = useState<Record<string, PlatformCheckResult>>({});
-  const [jobs, setJobs] = useState<Record<string, JobState>>({});
-  const [logs, setLogs] = useState<Record<string, string[]>>({});
+  const [check, setCheck] = useState<BuildCheckResult | null>(null);
+  const [job, setJob] = useState<JobState | null>(null);
+  const [logLines, setLogLines] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [history, setHistory] = useState<BuildHistoryEntry[]>(() => loadHistory());
@@ -39,15 +37,12 @@ export function App() {
   const historyRef = useRef(history);
   historyRef.current = history;
 
-  const sources = useRef<Map<string, EventSource>>(new Map());
-  const closeStreams = useCallback(() => {
-    sources.current.forEach((es) => es.close());
-    sources.current.clear();
-  }, []);
+  // The single active-card stream (queued/building build the user is watching).
+  const sourceRef = useRef<EventSource | null>(null);
 
   // Background status-only streams for in-flight history entries, keyed by jobId.
-  // Kept separate from `sources` (the active cards) so a build listed but not
-  // currently selected still updates its status live.
+  // Kept separate from the active card so a build listed but not currently
+  // selected still updates its status live.
   const listSources = useRef<Map<string, EventSource>>(new Map());
 
   // Persist history whenever it changes.
@@ -113,16 +108,16 @@ export function App() {
   }, []);
 
   // Keep a background status stream open for every in-flight build in the list,
-  // except the one already streamed by an active card (avoids a duplicate).
+  // except the one already streamed by the active card (avoids a duplicate).
   useEffect(() => {
-    const cardJobIds = new Set(
-      Object.values(jobs)
-        .filter((j) => j.status === "queued" || j.status === "building")
-        .map((j) => j.jobId),
-    );
+    const cardJobId =
+      job && (job.status === "queued" || job.status === "building") ? job.jobId : null;
     const wanted = new Set(
       history
-        .filter((h) => (h.status === "queued" || h.status === "building") && !cardJobIds.has(h.jobId))
+        .filter(
+          (h) =>
+            (h.status === "queued" || h.status === "building") && h.jobId !== cardJobId,
+        )
         .map((h) => h.jobId),
     );
 
@@ -160,7 +155,7 @@ export function App() {
         }
       });
     }
-  }, [history, jobs, patchHistory]);
+  }, [history, job, patchHistory]);
 
   // Close background streams on unmount.
   useEffect(() => {
@@ -173,23 +168,17 @@ export function App() {
 
   // Debounced live cache check.
   useEffect(() => {
-    if (!catalog || platforms.length === 0) {
-      setChecks({});
+    if (!catalog) {
+      setCheck(null);
       return;
     }
     const handle = setTimeout(() => {
-      checkBuilds({ version, platforms, options: selection })
-        .then((res) => {
-          const map: Record<string, PlatformCheckResult> = {};
-          for (const r of res.results) map[r.platform] = r;
-          setChecks(map);
-        })
+      checkBuilds({ version, options: selection })
+        .then((res) => setCheck(res.result))
         .catch((e) => setError(String(e.message ?? e)));
     }, 350);
     return () => clearTimeout(handle);
-  }, [catalog, version, platforms, selection]);
-
-  const platformDefs = catalog?.platforms ?? [];
+  }, [catalog, version, selection]);
 
   const setOption = useCallback((key: string, value: OptionValue | undefined) => {
     setSelection((prev) => {
@@ -211,22 +200,13 @@ export function App() {
         if (valid.has(k)) next[k] = v;
       }
       setSelection(next);
-      if (preset.platforms) {
-        const avail = new Set(catalog.platforms.filter((d) => d.available).map((d) => d.platform));
-        setPlatforms(preset.platforms.filter((p) => avail.has(p)));
-      }
     },
     [catalog],
   );
 
-  const togglePlatform = (p: Platform) => {
-    setPlatforms((prev) => (prev.includes(p) ? prev.filter((x) => x !== p) : [...prev, p]));
-  };
-
   const loadHistoryEntry = useCallback((entry: BuildHistoryEntry) => {
     setVersion(entry.version);
     setSelection(entry.selection);
-    setPlatforms([entry.platform]);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }, []);
 
@@ -236,123 +216,117 @@ export function App() {
 
   const clearHistory = useCallback(() => setHistory([]), []);
 
-  const startStream = useCallback((platform: string, jobId: string) => {
-    const es = new EventSource(`/api/builds/${jobId}/events`);
-    sources.current.set(platform, es);
-    es.addEventListener("log", (e) => {
-      const { line } = JSON.parse((e as MessageEvent).data) as { line: string };
-      setLogs((prev) => ({ ...prev, [platform]: [...(prev[platform] ?? []), line] }));
-    });
-    es.addEventListener("status", (e) => {
-      const { status } = JSON.parse((e as MessageEvent).data) as { status: JobState["status"] };
-      setJobs((prev) => ({ ...prev, [platform]: { ...prev[platform]!, status } }));
-      patchHistory(jobId, { status });
-    });
-    es.addEventListener("done", (e) => {
-      const d = JSON.parse((e as MessageEvent).data) as {
-        status: "success" | "failed";
-        downloadUrl?: string;
-        sha256?: string;
-        sizeBytes?: number;
-        error?: string;
-      };
-      setJobs((prev) => ({
-        ...prev,
-        [platform]: { ...prev[platform]!, ...d },
-      }));
-      patchHistory(jobId, d);
-      es.close();
-      sources.current.delete(platform);
-    });
-    es.addEventListener("error", (e) => {
-      // Custom server "error" event carries data; native connection errors don't.
-      if ((e as MessageEvent).data) {
+  const startStream = useCallback(
+    (jobId: string) => {
+      sourceRef.current?.close();
+      const es = new EventSource(`/api/builds/${jobId}/events`);
+      sourceRef.current = es;
+      es.addEventListener("log", (e) => {
+        const { line } = JSON.parse((e as MessageEvent).data) as { line: string };
+        setLogLines((prev) => [...prev, line]);
+      });
+      es.addEventListener("status", (e) => {
+        const { status } = JSON.parse((e as MessageEvent).data) as { status: JobState["status"] };
+        setJob((prev) => (prev ? { ...prev, status } : prev));
+        patchHistory(jobId, { status });
+      });
+      es.addEventListener("done", (e) => {
+        const d = JSON.parse((e as MessageEvent).data) as {
+          status: "success" | "failed";
+          downloadUrl?: string;
+          sha256?: string;
+          sizeBytes?: number;
+          error?: string;
+        };
+        setJob((prev) => (prev ? { ...prev, ...d } : prev));
+        patchHistory(jobId, d);
         es.close();
-        sources.current.delete(platform);
-      }
-    });
-  }, [patchHistory]);
+        if (sourceRef.current === es) sourceRef.current = null;
+      });
+      es.addEventListener("error", (e) => {
+        // Custom server "error" event carries data; native connection errors don't.
+        if ((e as MessageEvent).data) {
+          es.close();
+          if (sourceRef.current === es) sourceRef.current = null;
+        }
+      });
+    },
+    [patchHistory],
+  );
 
-  // When the resulting build identity changes, reset the job/log UI and rehydrate
-  // from history: restore any stored builds for this exact config and reconnect
-  // the live stream for ones still in flight, so the user sees their progress.
+  // When the build identity (version + options) changes, reset the job/log UI and
+  // rehydrate from history: restore a stored build for this exact config and
+  // reconnect the live stream if it is still in flight.
   useEffect(() => {
-    closeStreams();
-    setLogs({});
+    sourceRef.current?.close();
+    sourceRef.current = null;
+    setLogLines([]);
 
-    const matching = historyRef.current.filter(
+    const match = historyRef.current.find(
       (h) => h.version === version && stableStringify(h.selection) === selectionKey,
     );
 
-    const restored: Record<string, JobState> = {};
-    for (const h of matching) {
-      restored[h.platform] = {
-        jobId: h.jobId,
-        status: h.status,
-        downloadUrl: h.downloadUrl,
-        sha256: h.sha256,
-        sizeBytes: h.sizeBytes,
-        error: h.error,
-      };
+    if (!match) {
+      setJob(null);
+      return;
     }
-    setJobs(restored);
 
-    for (const h of matching) {
-      if (h.status === "queued" || h.status === "building") {
-        setLogs((prev) => ({ ...prev, [h.platform]: [] }));
-        startStream(h.platform, h.jobId);
-      }
+    setJob({
+      jobId: match.jobId,
+      status: match.status,
+      downloadUrl: match.downloadUrl,
+      sha256: match.sha256,
+      sizeBytes: match.sizeBytes,
+      error: match.error,
+    });
+    if (match.status === "queued" || match.status === "building") {
+      startStream(match.jobId);
     }
-  }, [version, selectionKey, closeStreams, startStream]);
+  }, [version, selectionKey, startStream]);
 
-  const generate = useCallback(
-    async (targets: Platform[]) => {
-      setError(null);
-      try {
-        const res = await createBuilds({ version, platforms: targets, options: selection });
-        const now = Date.now();
-        for (const job of res.jobs) {
-          setJobs((prev) => ({
-            ...prev,
-            [job.platform]: {
-              jobId: job.jobId,
-              status: job.status,
-              downloadUrl: job.downloadUrl,
-              sha256: job.sha256,
-              sizeBytes: job.sizeBytes,
-              error: job.error,
-            },
-          }));
-          setHistory((prev) =>
-            upsertEntry(prev, {
-              jobId: job.jobId,
-              cacheKey: job.cacheKey,
-              version,
-              platform: job.platform,
-              selection,
-              status: job.status,
-              cached: job.cached,
-              downloadUrl: job.downloadUrl,
-              sha256: job.sha256,
-              sizeBytes: job.sizeBytes,
-              error: job.error,
-              createdAt: now,
-              updatedAt: now,
-            }),
-          );
-          if (!job.cached && job.status !== "failed") {
-            setLogs((prev) => ({ ...prev, [job.platform]: [] }));
-            startStream(job.platform, job.jobId);
-          }
-        }
-      } catch (e) {
-        setError(String((e as Error).message ?? e));
+  const generate = useCallback(async () => {
+    setError(null);
+    try {
+      const res = await createBuilds({ version, options: selection });
+      const j = res.job;
+      const now = Date.now();
+      setJob({
+        jobId: j.jobId,
+        status: j.status,
+        downloadUrl: j.downloadUrl,
+        sha256: j.sha256,
+        sizeBytes: j.sizeBytes,
+        error: j.error,
+      });
+      setHistory((prev) =>
+        upsertEntry(prev, {
+          jobId: j.jobId,
+          cacheKey: j.cacheKey,
+          version,
+          selection,
+          status: j.status,
+          cached: j.cached,
+          downloadUrl: j.downloadUrl,
+          sha256: j.sha256,
+          sizeBytes: j.sizeBytes,
+          error: j.error,
+          createdAt: now,
+          updatedAt: now,
+        }),
+      );
+      if (!j.cached && j.status !== "failed") {
+        setLogLines([]);
+        startStream(j.jobId);
       }
-    },
-    [version, selection, startStream],
-  );
+    } catch (e) {
+      setError(String((e as Error).message ?? e));
+    }
+  }, [version, selection, startStream]);
 
   const changedCount = Object.keys(selection).length;
+  const platforms = catalog?.platforms ?? [];
+  const platformLabels = platforms.map((d) => d.label);
+  const unavailable = platforms.filter((d) => !d.available);
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200">
@@ -360,9 +334,9 @@ export function App() {
         <header className="mb-8">
           <h1 className="text-3xl font-bold text-white">Custom Godot Builds</h1>
           <p className="mt-2 text-slate-400">
-            Pick your engine version and features, and download a Godot export template compiled
-            to your exact configuration. Every configuration is cached, so repeat downloads are
-            instant.
+            Pick your engine version and features, and download Godot export templates
+            {platformLabels.length > 0 ? ` for ${formatList(platformLabels)}` : ""} compiled to your
+            exact configuration. Every configuration is cached, so repeat downloads are instant.
           </p>
         </header>
 
@@ -372,52 +346,19 @@ export function App() {
           </div>
         )}
 
-        <section className="grid md:grid-cols-2 gap-4 mb-6">
-          <div>
-            <label className="block text-sm text-slate-400 mb-1">Godot version</label>
-            <select
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2"
-              value={version}
-              onChange={(e) => setVersion(e.target.value)}
-            >
-              {versions.map((v) => (
-                <option key={v.version} value={v.version}>
-                  {v.version}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div>
-            <label className="block text-sm text-slate-400 mb-1">Platforms</label>
-            <div className="flex flex-wrap gap-2">
-              {ALL_PLATFORMS.map((p) => {
-                const def = platformDefs.find((d) => d.platform === p);
-                const disabled = def ? !def.available : false;
-                const active = platforms.includes(p);
-                return (
-                  <button
-                    key={p}
-                    type="button"
-                    disabled={disabled}
-                    title={disabled ? def?.unavailableReason : undefined}
-                    onClick={() => togglePlatform(p)}
-                    className={[
-                      "px-3 py-2 rounded-lg border text-sm",
-                      disabled
-                        ? "border-slate-800 text-slate-600 cursor-not-allowed"
-                        : active
-                          ? "border-sky-500 bg-sky-600/20 text-sky-200"
-                          : "border-slate-700 hover:border-slate-600",
-                    ].join(" ")}
-                  >
-                    {def?.label ?? p}
-                    {disabled && " (n/a)"}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
+        <section className="mb-6">
+          <label className="block text-sm text-slate-400 mb-1">Godot version</label>
+          <select
+            className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2"
+            value={version}
+            onChange={(e) => setVersion(e.target.value)}
+          >
+            {versions.map((v) => (
+              <option key={v.version} value={v.version}>
+                {v.version}
+              </option>
+            ))}
+          </select>
         </section>
 
         {catalog && (
@@ -457,28 +398,25 @@ export function App() {
           </section>
         )}
 
-        <section className="grid sm:grid-cols-2 gap-4">
-          {platforms.map((p) => {
-            const def = platformDefs.find((d) => d.platform === p);
-            if (!def) return null;
-            return (
-              <PlatformCard
-                key={p}
-                def={def}
-                check={checks[p]}
-                job={jobs[p]}
-                logLines={logs[p] ?? []}
-                version={version}
-                selection={selection}
-                onGenerate={() => generate([p])}
-              />
-            );
-          })}
-        </section>
+        {unavailable.length > 0 && (
+          <div className="mb-4 border border-amber-800 bg-amber-950/30 text-amber-300/90 rounded-lg px-4 py-3 text-sm">
+            This host can't currently build every platform, so bundle builds will fail:{" "}
+            {unavailable.map((d) => d.label).join(", ")}.
+          </div>
+        )}
+
+        <BuildCard
+          check={check ?? undefined}
+          job={job ?? undefined}
+          logLines={logLines}
+          version={version}
+          selection={selection}
+          platformLabels={platformLabels}
+          onGenerate={generate}
+        />
 
         <BuildHistory
           entries={history}
-          platformDefs={platformDefs}
           onLoad={loadHistoryEntry}
           onRemove={removeHistoryEntry}
           onClear={clearHistory}

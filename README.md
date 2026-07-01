@@ -19,14 +19,15 @@ packages/shared Option catalog, cache-key + custom.py logic shared by both
 ```
 
 1. The browser builds a config and calls `POST /api/builds/check` as you edit —
-   each platform shows either a **Download** link (already cached) or a
+   the bundle shows either a **Download** link (already cached) or a
    **Generate (~N min)** button.
 2. **Generate** validates the config against an allowlist, computes a cache key,
    and either serves the cache or enqueues a build.
 3. The worker clones the pinned Godot version (once per version), creates an
-   isolated **git worktree**, writes `custom.py`, runs `scons`, and streams the
-   live build log to the browser over **SSE**.
-4. On success the artifact is published to a hash-addressed cache directory with
+   isolated **git worktree**, then for each platform (Linux, Windows, macOS)
+   writes `custom.py`, runs `scons`, and streams the live build log over **SSE**.
+   The per-platform templates are zipped into one bundle artifact.
+4. On success the bundle is published to a hash-addressed cache directory with
    a `.complete` sentinel; the browser gets a download link + sha256.
 
 ### Versions
@@ -41,9 +42,10 @@ list before any clone — an arbitrary git ref is never checked out.
 
 ### Caching
 
-- **Per-configuration cache**: key = `sha256(version + platform + arch + target +
-  canonical options)`. Identical configs are served instantly; an in-flight
-  build is shared by all requesters (dedupe).
+- **Per-configuration cache**: key = `sha256(version + target + per-platform
+  canonical options)`. One build produces every platform, so a config maps to a
+  single bundle. Identical configs are served instantly; an in-flight build is
+  shared by all requesters (dedupe).
 - **Shared build-step cache**: a persistent `SCONS_CACHE` per Godot version means
   two configs that differ by a few toggles reuse most already-compiled objects.
   Only the *first* build of a version is a true cold (~30 min) build.
@@ -71,9 +73,14 @@ sudo apt-get install -y build-essential git pkg-config python3 scons zip mingw-w
   libwayland-dev wayland-protocols libxkbcommon-dev
 ```
 
-The app **probes the host on startup** and only offers platforms whose toolchain
-is present — a missing toolchain disables that platform in the UI rather than
-failing mid-build.
+The set of platforms every bundle covers is configurable via `BUILD_PLATFORMS`
+(default: all three; comma-separated subset of `linuxbsd,windows,macos`). The app
+**probes the host on startup** for each offered platform's toolchain. Because a
+build bundles all offered platforms, any missing toolchain is surfaced as a
+warning in the UI and rejected up front (the bundle is all-or-nothing) rather
+than failing mid-build. The provided [`Dockerfile`](./Dockerfile) installs all
+three toolchains, so it offers the full bundle out of the box; a bare host
+without an Apple SDK should drop `macos` from `BUILD_PLATFORMS`.
 
 ## Quick start
 
@@ -82,8 +89,8 @@ pnpm install
 pnpm dev          # API on :8787, web on :5173 (proxied to the API)
 ```
 
-Open http://localhost:5173, pick a version + platform(s), optionally tweak
-options, and click **Generate**.
+Open http://localhost:5173, pick a version, optionally tweak options, and click
+**Generate** to build the all-platform template bundle.
 
 Run the test suite:
 
@@ -108,9 +115,19 @@ All mutable state lives under `DATA_ROOT` (default `./.data`).
 
 ### Docker
 
-A [`Dockerfile`](./Dockerfile) bundles the Linux + Windows (mingw) toolchains,
-builds the web bundle, and serves everything from one container. macOS templates
-need `osxcross` + an Apple SDK and must be built on a host that has them.
+A [`Dockerfile`](./Dockerfile) builds **all three** toolchains — Linux,
+Windows (mingw), and macOS (osxcross + `rcodesign`) — builds the web bundle, and
+serves everything from one container. The macOS cross toolchain is assembled at
+image-build time from an Apple SDK tarball: the SDK is Apple-licensed and not
+redistributable, so it is fetched from `MACOS_SDK_URL` (override the build arg to
+use your own):
+
+```bash
+docker build --build-arg MACOS_SDK_URL=<your-sdk-url> -t godotbuild .
+```
+
+The default points at a community-hosted SDK so `docker build` works unmodified.
+To build a Linux + Windows-only image, set `BUILD_PLATFORMS=linuxbsd,windows`.
 
 ```bash
 docker compose up --build      # serves the app on http://localhost:8787
@@ -151,8 +168,8 @@ User selections never become raw shell or Python strings:
 | ------ | ---- | ------- |
 | GET  | `/api/versions` | Supported Godot versions (live from the Godot repo) |
 | GET  | `/api/catalog?version=<tag>` | Option catalog (flags + discovered modules + host platforms) |
-| POST | `/api/builds/check` | Per-platform cache status + time estimate (no enqueue) |
-| POST | `/api/builds` | Validate + enqueue (or serve cache); returns jobs |
+| POST | `/api/builds/check` | Bundle cache status + time estimate (no enqueue) |
+| POST | `/api/builds` | Validate + enqueue (or serve cache); returns one job |
 | GET  | `/api/builds/:jobId/events` | SSE: live log, status, completion |
 | GET  | `/api/builds/:jobId` | Job status (polling fallback) |
 | GET  | `/api/builds/:cacheKey/download` | Download the compiled artifact |

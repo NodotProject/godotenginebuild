@@ -85,22 +85,26 @@ export interface BuildPreset {
   description: string;
   /** Partial selection applied on top of catalog defaults. */
   options: OptionSelection;
-  /** Platforms the preset suggests selecting. */
-  platforms?: Platform[];
+}
+
+/** Per-platform build input within a bundle: arch + canonical scons options. */
+export interface PlatformBuildSpec {
+  arch: string;
+  /** Canonicalized scons-value map for this platform (defaults dropped, sorted). */
+  options: Record<string, string>;
 }
 
 /**
- * Canonical input that is hashed into a cache key. Order of keys here is fixed;
- * `options` is canonicalized (defaults dropped, keys sorted) before hashing.
+ * Canonical input that is hashed into a cache key. One build produces every
+ * platform, so the key covers all of them; `platforms` is keyed by platform
+ * name (sorted) and each entry's options are canonicalized before hashing.
  */
 export interface CacheKeyInput {
   schema: number;
   godotVersion: string;
-  platform: Platform;
-  arch: string;
-  target: BuildTarget;
   catalogVersion: number;
-  options: Record<string, string>;
+  target: BuildTarget;
+  platforms: Record<Platform, PlatformBuildSpec>;
 }
 
 // ---------------------------------------------------------------------------
@@ -127,14 +131,10 @@ export type JobStatus =
 
 export interface BuildCheckRequest {
   version: string;
-  platforms: Platform[];
   options: OptionSelection;
 }
 
-export interface PlatformCheckResult {
-  platform: Platform;
-  arch: string;
-  target: BuildTarget;
+export interface BuildCheckResult {
   cacheKey: string;
   cached: boolean;
   downloadUrl?: string;
@@ -147,7 +147,7 @@ export interface PlatformCheckResult {
 }
 
 export interface BuildCheckResponse {
-  results: PlatformCheckResult[];
+  result: BuildCheckResult;
 }
 
 export type BuildRequest = BuildCheckRequest;
@@ -155,9 +155,6 @@ export type BuildRequest = BuildCheckRequest;
 export interface JobInfo {
   jobId: string;
   cacheKey: string;
-  platform: Platform;
-  arch: string;
-  target: BuildTarget;
   status: JobStatus;
   cached: boolean;
   downloadUrl?: string;
@@ -167,7 +164,7 @@ export interface JobInfo {
 }
 
 export interface BuildResponse {
-  jobs: JobInfo[];
+  job: JobInfo;
 }
 
 // ---------------------------------------------------------------------------

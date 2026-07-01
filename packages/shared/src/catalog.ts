@@ -13,7 +13,7 @@ import type {
 export const CATALOG_VERSION = 1;
 
 /** Cache-key schema version. Bump to invalidate all keys on format change. */
-export const CACHE_SCHEMA = 1;
+export const CACHE_SCHEMA = 2;
 
 /** v1 only produces export-release templates. Kept extensible. */
 export const DEFAULT_TARGET: BuildTarget = "template_release";
@@ -297,7 +297,6 @@ export const PRESETS: BuildPreset[] = [
       minizip: true,
       ...moduleEnables(LITE_MODULES),
     },
-    platforms: ["linuxbsd"],
   },
   {
     id: "3d-full",

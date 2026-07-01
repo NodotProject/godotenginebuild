@@ -1,6 +1,6 @@
-import type { JobStatus, OptionSelection, Platform } from "@godotbuild/shared";
+import type { JobStatus, OptionSelection } from "@godotbuild/shared";
 
-const STORAGE_KEY = "godotbuild.history.v1";
+const STORAGE_KEY = "godotbuild.history.v2";
 const MAX_ENTRIES = 50;
 
 /** A build the user kicked off, persisted across reloads in localStorage. */
@@ -8,7 +8,6 @@ export interface BuildHistoryEntry {
   jobId: string;
   cacheKey: string;
   version: string;
-  platform: Platform;
   /** Exact option selection used, so the config can be reloaded. */
   selection: OptionSelection;
   status: JobStatus;
